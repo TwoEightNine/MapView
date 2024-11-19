@@ -58,29 +58,31 @@ class TileCollector(private val workerCount: Int, private val bitmapConfig: Bitm
      * @param [tileSpecs] channel of [TileSpec], which capacity should be [Channel.RENDEZVOUS].
      * @param [tilesOutput] channel of [Tile], which should be set as [Channel.RENDEZVOUS].
      */
-    fun CoroutineScope.collectTiles(tileSpecs: ReceiveChannel<TileSpec>,
-                                    tilesOutput: SendChannel<Tile>,
-                                    tileStreamProvider: TileStreamProvider,
-                                    bitmapFlow: Flow<Bitmap>) {
+    fun CoroutineScope.collectTiles(
+            tileSpecs: ReceiveChannel<TileSpec>,
+            tilesOutput: SendChannel<Tile>,
+            tileProvider: TileProvider,
+            bitmapFlow: Flow<Bitmap>
+    ) {
         val tilesToDownload = Channel<TileSpec>(capacity = Channel.RENDEZVOUS)
         val tilesDownloadedFromWorker = Channel<TileSpec>(capacity = 1)
 
-        repeat(workerCount) { worker(tilesToDownload, tilesDownloadedFromWorker, tilesOutput, tileStreamProvider, bitmapFlow) }
+        repeat(workerCount) { worker(tilesToDownload, tilesDownloadedFromWorker, tilesOutput, tileProvider, bitmapFlow) }
         tileCollectorKernel(tileSpecs, tilesToDownload, tilesDownloadedFromWorker)
     }
 
-    private fun CoroutineScope.worker(tilesToDownload: ReceiveChannel<TileSpec>,
-                                      tilesDownloaded: SendChannel<TileSpec>,
-                                      tilesOutput: SendChannel<Tile>,
-                                      tileStreamProvider: TileStreamProvider,
-                                      bitmapFlow: Flow<Bitmap>) = launch(dispatcher) {
+    private fun CoroutineScope.worker(
+            tilesToDownload: ReceiveChannel<TileSpec>,
+            tilesDownloaded: SendChannel<TileSpec>,
+            tilesOutput: SendChannel<Tile>,
+            tileProvider: TileProvider,
+            bitmapFlow: Flow<Bitmap>
+    ) = launch(dispatcher) {
 
         val bitmapLoadingOptions = BitmapFactory.Options()
         bitmapLoadingOptions.inPreferredConfig = bitmapConfig
 
         for (spec in tilesToDownload) {
-            val i = tileStreamProvider.getTileStream(spec.row, spec.col, spec.zoom)
-
             if (spec.subSample > 0) {
                 bitmapLoadingOptions.inBitmap = null
                 bitmapLoadingOptions.inScaled = true
@@ -91,20 +93,20 @@ class TileCollector(private val workerCount: Int, private val bitmapConfig: Bitm
                 bitmapLoadingOptions.inSampleSize = 0
             }
 
-            val bitmap = runCatching {
-                i.use {
-                    BitmapFactory.decodeStream(i, null, bitmapLoadingOptions)
-                }
-            }.getOrNull() ?: runCatching {
-                /* Retry loading the image without using already allocated memory */
-                if (bitmapLoadingOptions.inBitmap != null) {
-                    bitmapLoadingOptions.inBitmap = null
-                    val retry = tileStreamProvider.getTileStream(spec.row, spec.col, spec.zoom)
-                    retry.use {
-                        BitmapFactory.decodeStream(retry, null, null)
-                    }
-                } else null
+            var bitmap = runCatching {
+                tileProvider.getTileBitmap(spec.row, spec.col, spec.zoom, bitmapLoadingOptions)
             }.getOrNull()
+            if (bitmap == null) {
+                bitmap = runCatching {
+                    /* Retry loading the image without using already allocated memory */
+                    if (bitmapLoadingOptions.inBitmap != null) {
+                        bitmapLoadingOptions.inBitmap = null
+                        tileProvider.getTileBitmap(spec.row, spec.col, spec.zoom, options = null)
+                    } else {
+                        null
+                    }
+                }.getOrNull()
+            }
             tilesDownloaded.send(spec)
             if (bitmap == null) {
                 continue

@@ -1,17 +1,17 @@
 package ovh.plrapps.mapview.core
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import java.io.InputStream
 
 /**
- * The tile provider is user-provided to the MapView. It must be supplied as part of the configuration
- * of the MapView.
- *
- * The MapView leverages bitmap pooling to reduce the pressure on the garbage collector. However,
- * there's no tile caching by default - this is an implementation detail of the supplied
- * [TileStreamProvider].
- *
- * If [getTileStream] returns null, the tile is simply ignored by the tile processing machinery.
+ * [InputStream]-base copy of [TileProvider]
  */
-fun interface TileStreamProvider {
+fun interface TileStreamProvider : TileProvider {
     fun getTileStream(row: Int, col: Int, zoomLvl: Int): InputStream?
+
+    override fun getTileBitmap(row: Int, col: Int, zoomLvl: Int, options: BitmapFactory.Options?): Bitmap? {
+        val i = getTileStream(row, col, zoomLvl)
+        return i.use { BitmapFactory.decodeStream(i, null, options) }
+    }
 }
